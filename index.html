@@ -210,23 +210,57 @@ let camRow=null,tessP=null;
 function loadTess(){ return tessP||(tessP=new Promise((ok,no)=>{ if(window.Tesseract)return ok();
  const s=document.createElement("script"); s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
  s.onload=ok; s.onerror=()=>{tessP=null;no(new Error("無法載入辨識引擎(請確認網路)"));}; document.head.appendChild(s); })); }
-function parsePower(text){
- const out=[],seen=new Set(),add=(w,label)=>{w=Math.round(w);if(w>=1&&w<=20000&&!seen.has(w)){seen.add(w);out.push({w,label});}};
- text.split("\n").forEach(line=>{
-  if(/能力|cooling|capacity|heating|btu|kcal/i.test(line))return; // 冷房/暖房能力不是耗電
-  for(const m of line.matchAll(/(\d{1,5}(?:\.\d+)?)\s*(k?)W\b/gi)) add(+m[1]*(m[2]?1000:1),"銘牌標示 "+m[0]);
- });
- if(!out.length){ const v=[...text.matchAll(/(\d{2,3})\s*V\b/gi)].map(m=>+m[1]).find(x=>x>=100&&x<=440);
-  const a=text.match(/(\d{1,2}(?:\.\d+)?)\s*A\b/); if(v&&a) add(v*+a[1],`${v}V × ${a[1]}A 換算`); }
- return out;
+// 照片前處理:放大/縮到長邊約 2000px、轉灰階、拉開對比,銘牌反光和低對比時差很多
+async function prep(file){
+ let bmp; try{ bmp=await createImageBitmap(file,{imageOrientation:"from-image"}); }catch(e){ bmp=await createImageBitmap(file); }
+ const sc=Math.min(2.5,2000/Math.max(bmp.width,bmp.height)), w=Math.round(bmp.width*sc), h=Math.round(bmp.height*sc);
+ const c=document.createElement("canvas"); c.width=w; c.height=h; const x=c.getContext("2d"); x.drawImage(bmp,0,0,w,h);
+ const im=x.getImageData(0,0,w,h), d=im.data, hist=new Uint32Array(256);
+ for(let i=0;i<d.length;i+=4){const g=(d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114)|0; d[i]=g; hist[g]++;}
+ const n=w*h; let lo=0,hi=255,acc=0; for(let i=0;i<256;i++){acc+=hist[i]; if(acc>n*0.02){lo=i;break;}}
+ acc=0; for(let i=255;i>=0;i--){acc+=hist[i]; if(acc>n*0.02){hi=i;break;}}
+ const k=255/Math.max(1,hi-lo);
+ for(let i=0;i<d.length;i+=4){const v=Math.max(0,Math.min(255,(d[i]-lo)*k)); d[i]=d[i+1]=d[i+2]=v;}
+ x.putImageData(im,0,0); return new Promise(r=>c.toBlob(r,"image/png"));
 }
+const KEY_P=/功率|消耗|輸入|額定|耗電|POWER|INPUT|WATT|RATED|W\s*[:：]/i, CAP=/能力|COOLING|CAPACITY|HEATING|BTU|KCAL|冷房|暖房|冷氣能/i;
+function parsePower(raw){
+ const text=raw.normalize("NFKC").replace(/[|｜]/g,"1").replace(/(\d)\s*(?:VV|vv)\b/g,"$1W");
+ const out=[],seen=new Set(),add=(w,label,top)=>{w=Math.round(w);if(w>=1&&w<=20000&&!seen.has(w)){seen.add(w);out.push({w,label,top});}};
+ const num=s=>+String(s).replace(/,/g,"");
+ const lines=text.split("\n");
+ // 1) 數字+單位(W / kW / 瓦 / Watt),有功率關鍵字的行優先
+ lines.forEach(line=>{
+  const isCap=CAP.test(line)&&!/消耗|輸入|耗電|INPUT/i.test(line); if(isCap)return;
+  for(const m of line.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(k?)\s*(?:w|瓦|watts?)(?![a-z])/gi)) add(num(m[1])*(m[2]?1000:1),"銘牌標示 "+m[0].trim(),KEY_P.test(line));
+ });
+ // 2) 關鍵字後面接數字(單位被辨識錯時,例如「額定功率 1500」)
+ lines.forEach(line=>{
+  if(CAP.test(line)&&!/消耗|輸入|耗電|INPUT/i.test(line))return;
+  const m=line.match(/(?:功率|消耗電功率|輸入|POWER|INPUT|WATT|RATED)[^\d\n]{0,14}(\d[\d,]*(?:\.\d+)?)(?!\s*(?:v|hz|a|kg|l|mm|k?w|瓦)\b)/i);
+  if(m) add(num(m[1]),"「功率」後的數字 "+m[1],true);
+ });
+ // 3) 電壓 × 電流
+ const v=[...text.matchAll(/(\d{2,3})\s*V\b/gi)].map(m=>+m[1]).find(x=>x>=100&&x<=440);
+ const a=text.match(/(\d{1,2}(?:\.\d+)?)\s*A\b/); if(v&&a) add(v*+a[1],`${v}V × ${a[1]}A 換算(視在功率,僅供參考)`,false);
+ out.sort((p,q)=>(q.top?1:0)-(p.top?1:0));
+ // 4) 其他可能的數字,讓使用者自己挑
+ const others=[],os=new Set();
+ for(const m of text.matchAll(/(?<![\d.])(\d[\d,]{1,5}(?:\.\d+)?)(?![\d.]*\s*(?:v|hz|a|kg|l|mm|cm|rpm|°|%|年|月|日)\b)/gi)){ const x=Math.round(num(m[1])); if(x>=10&&x<=9999&&!seen.has(x)&&!os.has(x)&&!(x>=1990&&x<=2035)){os.add(x);others.push(x);} }
+ return {cands:out,others:others.slice(0,10)};
+}
+function el(t,props,kids){const e=document.createElement(t);Object.assign(e,props||{});(kids||[]).forEach(k=>e.append(k));return e;}
 function showOcr(text){
- const box=$("ocr"), name=camRow.querySelector(".nm")?camRow.querySelector(".nm").value:APPL[camRow.dataset.i][0], c=parsePower(text);
- box.innerHTML=`<b>${name}</b> 辨識結果:`+(c.length?c.map((x,i)=>` <button type=button class="sec use" data-w="${x.w}">採用 ${x.w} W <small>(${x.label.replace(/[<>&]/g,"")})</small></button>`).join(""):" <span class=warn>找不到瓦數</span>")+
- `<div class=row><input id=mdl placeholder="輸入型號 → 查規格" style="max-width:260px"><button type=button class=sec id=mdlGo>搜尋型號</button><button type=button class=sec id=ocrX>關閉</button></div>
- <details><summary class=note>辨識原文(請核對)</summary><pre id=ocrRaw></pre></details>
- <div class=note>注意:冷氣銘牌的「冷房能力」不是耗電瓦數,請選「消耗電功率/輸入」。辨識可能有誤,務必對照照片確認。</div>`;
- $("ocrRaw").textContent=text; box.hidden=false;
+ const box=$("ocr"), name=camRow.querySelector(".nm")?camRow.querySelector(".nm").value:APPL[camRow.dataset.i][0], {cands,others}=parsePower(text);
+ box.replaceChildren(el("b",{textContent:name}),document.createTextNode(" 辨識結果:"));
+ cands.forEach(x=>{const b=el("button",{type:"button",className:"sec use",textContent:"採用 "+x.w+" W"});b.dataset.w=x.w;b.title=x.label;box.append(" ",b," ",el("small",{className:"note",textContent:x.label}));});
+ if(!cands.length) box.append(el("span",{className:"warn",textContent:" 沒有找到明確的瓦數。"}));
+ if(others.length){ box.append(el("div",{className:"note",textContent:"照片上讀到的其他數字(自己判斷哪個是耗電瓦數):"})); const r=el("div",{className:"row"}); others.forEach(x=>{const b=el("button",{type:"button",className:"sec use",textContent:x});b.dataset.w=x;r.append(b);}); box.append(r); }
+ const inp=el("input",{id:"mdl",placeholder:"輸入型號 → 查規格"}); inp.style.maxWidth="260px";
+ box.append(el("div",{className:"row"},[inp,el("button",{type:"button",className:"sec",id:"mdlGo",textContent:"搜尋型號"}),el("button",{type:"button",className:"sec",id:"ocrX",textContent:"關閉"})]));
+ const det=el("details",{open:!cands.length},[el("summary",{className:"note",textContent:"辨識原文(核對用)"}),el("pre",{textContent:text||"(沒有讀到任何文字,請重拍:靠近一點、避開反光、對準銘牌)"})]); box.append(det);
+ box.append(el("div",{className:"note",textContent:"冷氣銘牌的「冷房能力」不是耗電瓦數;務必對照照片確認。"}));
+ box.hidden=false;
 }
 document.addEventListener("click",e=>{
  const cam=e.target.closest(".cam"); if(cam){camRow=cam.closest("tr");$("photo").click();return;}
@@ -236,9 +270,16 @@ document.addEventListener("click",e=>{
 });
 $("photo").onchange=async e=>{
  const file=e.target.files[0]; e.target.value=""; if(!file||!camRow)return;
- const box=$("ocr"); box.hidden=false; box.textContent="辨識中…(首次需下載辨識引擎,約數秒~數十秒)";
- try{ await loadTess(); const {data}=await Tesseract.recognize(file,"eng"); showOcr(data.text); }
- catch(err){ box.textContent="辨識失敗:"+err.message+"。請改手動輸入瓦數。"; }
+ const box=$("ocr"); box.hidden=false; box.textContent="處理照片中…";
+ let worker;
+ try{
+  const img=await prep(file); box.textContent="辨識中…(首次需下載辨識引擎,約數秒~數十秒)";
+  await loadTess(); worker=await Tesseract.createWorker("eng");
+  let text="";
+  for(const psm of ["6","11"]){ await worker.setParameters({tessedit_pageseg_mode:psm,preserve_interword_spaces:"1"}); text+=(await worker.recognize(img)).data.text+"\n"; }
+  showOcr(text.trim());
+ }catch(err){ box.textContent="辨識失敗:"+(err&&err.message||err)+"。請改手動輸入瓦數。"; }
+ finally{ try{worker&&await worker.terminate();}catch(e){} }
 };
 build(); load(); calc();
 </script>
