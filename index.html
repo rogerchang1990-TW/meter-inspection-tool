@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>電表勘驗試算工具</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1d2330;--mu:#6b7385;--ac:#0b6b3a;--ac2:#e8f4ec;--bd:#dde1e8;--wn:#b45309}
+@media(prefers-color-scheme:dark){:root{--bg:#14171d;--card:#1d222b;--tx:#e8ebf0;--mu:#97a0b0;--ac:#4cc283;--ac2:#1d3326;--bd:#303744;--wn:#f0a64a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.5 -apple-system,"PingFang TC","Noto Sans TC",sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:17px;margin:0 0 10px}
+.sub{color:var(--mu);font-size:14px;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+label{display:block;font-size:13px;color:var(--mu)}
+input,select{width:100%;font:inherit;padding:8px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx)}
+input[type=checkbox]{width:22px;height:22px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{font-size:12px;color:var(--mu);text-align:left;padding:4px}
+td{padding:4px;border-top:1px solid var(--bd)}
+td input{padding:6px}
+td.n{text-align:right;white-space:nowrap}
+.tbl{overflow-x:auto}
+button{font:inherit;padding:9px 14px;border-radius:8px;border:1px solid var(--ac);background:var(--ac);color:#fff;cursor:pointer}
+button.sec{background:transparent;color:var(--ac)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.big{font-size:28px;font-weight:700;color:var(--ac)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.kpi{background:var(--ac2);border-radius:10px;padding:10px}
+.kpi small{color:var(--mu)}
+.bar{height:10px;background:var(--bd);border-radius:5px;overflow:hidden;min-width:80px}
+.bar i{display:block;height:100%;background:var(--ac)}
+.warn{color:var(--wn)}
+pre{white-space:pre-wrap;background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:10px;font:14px/1.6 inherit}
+.note{font-size:12px;color:var(--mu)}
+@media print{.noprint{display:none}body{background:#fff;color:#000}}
+</style>
+</head>
+<body>
+<main>
+<h1>⚡ 電表勘驗試算工具</h1>
+<div class="sub">住宅非時間電價(表燈) · 逐項家電估算用電量,對照帳單說明電費來源</div>
+
+<div class="card">
+<h2>1. 帳單資料</h2>
+<div class="grid">
+<div><label>用戶/地址(備註)</label><input id="cust"></div>
+<div><label>計費天數</label><input id="days" type="number" value="60" min="1"></div>
+<div><label>其中夏月天數(6/1–9/30)</label><input id="sdays" type="number" value="0" min="0"></div>
+<div><label>帳單度數(kWh)</label><input id="billKwh" type="number" min="0"></div>
+<div><label>帳單金額(元,選填)</label><input id="billAmt" type="number" min="0"></div>
+<div><label>期初電表讀數(選填)</label><input id="r0" type="number"></div>
+<div><label>期末電表讀數(選填)</label><input id="r1" type="number"></div>
+</div>
+<div class="note" id="readNote"></div>
+</div>
+
+<div class="card">
+<h2>2. 現場家電清查</h2>
+<div class="note">勾選有的家電、填數量;瓦數與每日使用時數可依現場實況修改。「負載率」= 壓縮機/加熱器實際運轉比例(冷氣、冰箱等不會全時滿載)。</div>
+<div class="tbl"><table>
+<thead><tr><th>有</th><th>家電</th><th>數量</th><th>瓦數 W</th><th>時數/日</th><th>負載率</th><th style="text-align:right">期間度數</th><th>占比</th><th class=noprint>銘牌</th></tr></thead>
+<tbody id="rows"></tbody></table></div>
+<input type="file" id="photo" accept="image/*" capture="environment" hidden>
+<div id="ocr" class="card noprint" hidden style="margin:10px 0 0"></div>
+<div class="row noprint"><button class="sec" id="addCustom">＋ 新增其他電器</button><button class="sec" id="reset">清除全部</button></div>
+</div>
+
+<div class="card" id="result">
+<h2>3. 結果</h2>
+<div class="kpis" id="kpis"></div>
+<h2 style="margin-top:14px">累進級距電費明細(以帳單度數計算)</h2>
+<div class="tbl"><table id="tiers"></table></div>
+</div>
+
+<div class="card">
+<h2>4. 說明文字(可複製給民眾)</h2>
+<pre id="report"></pre>
+<div class="row noprint"><button id="copy">複製說明</button><button class="sec" onclick="print()">列印 / 存 PDF</button></div>
+</div>
+
+<div class="card noprint">
+<h2>電價費率(可修改)</h2>
+<div class="note">預設為住宅非時間電價之每月(30 天)級距與費率,雙月計費自動依天數換算。費率請依台電最新公告核對後修改。</div>
+<div class="tbl"><table>
+<thead><tr><th>級距(度/月)</th><th>夏月 元/度</th><th>非夏月 元/度</th></tr></thead>
+<tbody id="rateRows"></tbody></table></div>
+</div>
+<div class="note">本工具為現場說明用之估算,實際電費以台電計費系統為準。</div>
+</main>
+
+<script>
+const APPL=[
+["冷氣(變頻)",1200,8,0.6],["冷氣(定頻)",1800,8,0.7],["冰箱",150,24,0.4],["電熱水器(儲熱式)",4000,1.5,1],
+["電熱水瓶/飲水機",600,24,0.2],["洗衣機",500,1,1],["烘衣機",2000,1,1],["除濕機",300,8,0.6],
+["電鍋",700,1,1],["微波爐",1100,0.3,1],["烤箱/氣炸鍋",1500,0.5,1],["電磁爐",1800,1,1],
+["電暖器",1200,4,0.8],["電視",120,5,1],["電腦/螢幕",200,8,1],["電風扇",50,8,1],
+["吹風機",1000,0.2,1],["空氣清淨機",50,24,1],["LED 燈具(全戶合計)",100,6,1],["洗碗機",1200,1,1],
+["抽水馬達",750,1,0.8],["電動車充電",2000,3,1],["虛擬貨幣礦機/伺服器",1000,24,1]
+];
+const RATES=[[120,1.78,1.78],[330,2.55,2.26],[500,3.80,3.13],[700,5.14,4.24],[1000,6.44,5.36],[Infinity,8.46,6.91]];
+const $=id=>document.getElementById(id);
+let custom=[];
+const KEY="meterTool.v1";
+
+function rowHtml(i,a,isC){
+ return `<tr data-i="${i}"><td><input type=checkbox class=on></td>
+ <td>${isC?'<input class=nm value="'+a[0]+'">':a[0]}</td>
+ <td><input class=q type=number value=1 min=0 style="width:60px"></td>
+ <td><input class=w type=number value=${a[1]} style="width:80px"></td>
+ <td><input class=h type=number value=${a[2]} step=0.1 style="width:70px"></td>
+ <td><input class=d type=number value=${a[3]} step=0.05 min=0 max=1 style="width:70px"></td>
+ <td class="n kwh">0</td><td><div class=bar><i></i></div></td>
+ <td class=noprint><button class="sec cam" type=button title="拍銘牌辨識瓦數">📷</button></td></tr>`;
+}
+function build(){
+ $("rows").innerHTML=APPL.map((a,i)=>rowHtml(i,a,false)).join("")+custom.map((a,i)=>rowHtml(100+i,a,true)).join("");
+ $("rateRows").innerHTML=RATES.map((r,i)=>`<tr><td>${i==0?"≤ "+r[0]:i==RATES.length-1?"> "+RATES[i-1][0]:(RATES[i-1][0]+1)+" – "+r[0]}</td>
+ <td><input class=rs data-i=${i} type=number step=0.01 value=${r[1]}></td><td><input class=rw data-i=${i} type=number step=0.01 value=${r[2]}></td></tr>`).join("");
+}
+function tierBill(kwh,days,col){ // col 1 summer, 2 non-summer
+ let rem=kwh,prev=0,out=[],tot=0;
+ RATES.forEach(r=>{
+  const cap=r[0]*days/30, span=cap-prev, use=Math.max(0,Math.min(rem,span));
+  if(use>0){out.push({from:prev,to:cap,kwh:use,rate:r[col],amt:use*r[col]});tot+=use*r[col];}
+  rem-=use;prev=cap;
+ });
+ return {out,tot};
+}
+const f=(n,d=0)=>Number(n).toLocaleString("zh-TW",{maximumFractionDigits:d,minimumFractionDigits:d});
+
+function calc(){
+ const days=+$("days").value||60, sd=Math.min(days,+$("sdays").value||0), nd=days-sd;
+ let billKwh=+$("billKwh").value||0;
+ const r0=$("r0").value,r1=$("r1").value;
+ if(r0!==""&&r1!==""&&+r1>=+r0){ $("readNote").textContent=`依電表讀數:${f(r1-r0,1)} kWh(日均 ${f((r1-r0)/days,1)} kWh)`; if(!billKwh) billKwh=+r1-+r0; }
+ else $("readNote").textContent="";
+ // appliances
+ let est=0; const items=[];
+ document.querySelectorAll("#rows tr").forEach(tr=>{
+  const on=tr.querySelector(".on").checked;
+  const name=tr.querySelector(".nm")?tr.querySelector(".nm").value:APPL[tr.dataset.i][0];
+  const k=on?(+tr.querySelector(".q").value)*(+tr.querySelector(".w").value)/1000*(+tr.querySelector(".h").value)*(+tr.querySelector(".d").value)*days:0;
+  tr.dataset.k=k; tr.querySelector(".kwh").textContent=on?f(k,1):"—";
+  if(on){est+=k;items.push({name,k});}
+ });
+ document.querySelectorAll("#rows tr").forEach(tr=>{
+  tr.querySelector(".bar i").style.width=(est?+tr.dataset.k/est*100:0)+"%";
+ });
+ // bill
+ const sk=billKwh*sd/days, nk=billKwh-sk;
+ const bs=tierBill(sk,sd||1,1), bn=tierBill(nk,nd||1,2);
+ const bill=(sd?bs.tot:0)+(nd?bn.tot:0);
+ const billAmt=+$("billAmt").value||0;
+ const avg=billKwh?bill/billKwh:0;
+ const gap=billKwh-est, cover=billKwh?est/billKwh*100:0;
+ $("kpis").innerHTML=`
+ <div class=kpi><small>帳單度數</small><div class=big>${f(billKwh,0)}</div>日均 ${f(billKwh/days,1)} 度</div>
+ <div class=kpi><small>家電估算合計</small><div class=big>${f(est,0)}</div>約占帳單 ${f(cover,0)}%</div>
+ <div class=kpi><small>差額(未列入/誤差)</small><div class="big ${Math.abs(gap)>billKwh*0.2?'warn':''}">${f(gap,0)}</div>${gap>0?"帳單高於估算":"估算高於帳單"}</div>
+ <div class=kpi><small>依費率試算電費</small><div class=big>${f(bill,0)}</div>平均 ${f(avg,2)} 元/度${billAmt?`<br>帳單金額 ${f(billAmt)} 元(差 ${f(billAmt-bill)})`:""}</div>`;
+ const rows=[];
+ [["夏月",sd,bs],["非夏月",nd,bn]].forEach(([n,d,b])=>{ if(d>0) b.out.forEach(o=>rows.push(`<tr><td>${n}(${d}天)</td><td>${f(o.from,0)}–${isFinite(o.to)&&o.to<1e6?f(o.to,0):"以上"} 度</td><td class=n>${f(o.kwh,1)} 度</td><td class=n>${o.rate} 元</td><td class=n>${f(o.amt)} 元</td></tr>`)); });
+ $("tiers").innerHTML=`<thead><tr><th>季節</th><th>級距</th><th style="text-align:right">用電</th><th style="text-align:right">單價</th><th style="text-align:right">金額</th></tr></thead><tbody>${rows.join("")}</tbody>`;
+ // report
+ items.sort((a,b)=>b.k-a.k);
+ const top=items.slice(0,6).map((x,i)=>`  ${i+1}. ${x.name}:約 ${f(x.k,0)} 度(${est?f(x.k/est*100,0):0}%),約 ${f(x.k*avg)} 元`).join("\n");
+ const hi=bn.out.concat(sd?bs.out:[]).filter(o=>o.rate>=RATES[3][1]&&o.kwh>0);
+ let txt=`【用電勘驗說明】${$("cust").value?"\n用戶:"+$("cust").value:""}
+計費期間 ${days} 天,用電 ${f(billKwh,0)} 度(日均 ${f(billKwh/days,1)} 度),試算電費約 ${f(bill)} 元,平均 ${f(avg,2)} 元/度。
+
+▍主要耗電家電(現場清查估算)
+${top||"  (尚未勾選家電)"}
+  家電估算合計約 ${f(est,0)} 度,占總用電 ${f(cover,0)}%。${gap>billKwh*0.2?"\n  尚有約 "+f(gap,0)+" 度未列入,可能為使用時數高於估算、設備老舊耗電較高或有漏列電器。":""}
+
+▍電費為什麼會變高
+  住宅電價採累進費率,用得越多,超過的部分單價越高。`;
+ if(hi.length) txt+=`\n  本期有 ${f(hi.reduce((s,o)=>s+o.kwh,0),0)} 度落在較高級距(單價 ${RATES[3][1]} 元以上),約占電費 ${f(hi.reduce((s,o)=>s+o.amt,0)/bill*100,0)}%。`;
+ txt+=`\n  夏月(6–9月)單價也比非夏月高,冷氣使用多時電費增加明顯。\n\n▍節電建議\n  冷氣設定 26–28°C 並搭配電風扇;舊冰箱/舊冷氣可評估汰換;儲熱式熱水器可裝定時;不用的電器拔插頭減少待機耗電。`;
+ $("report").textContent=txt;
+ save();
+}
+function save(){ try{
+ const s={custom,vals:{}};
+ ["cust","days","sdays","billKwh","billAmt","r0","r1"].forEach(k=>s.vals[k]=$(k).value);
+ s.rows=[...document.querySelectorAll("#rows tr")].map(tr=>({on:tr.querySelector(".on").checked,nm:tr.querySelector(".nm")?.value,q:tr.querySelector(".q").value,w:tr.querySelector(".w").value,h:tr.querySelector(".h").value,d:tr.querySelector(".d").value}));
+ s.rates=RATES.map(r=>[r[1],r[2]]);
+ localStorage.setItem(KEY,JSON.stringify(s)); }catch(e){} }
+function load(){ try{
+ const s=JSON.parse(localStorage.getItem(KEY)||"null"); if(!s)return;
+ custom=s.custom||[]; (s.rates||[]).forEach((r,i)=>{RATES[i][1]=r[0];RATES[i][2]=r[1]});
+ build();
+ Object.entries(s.vals).forEach(([k,v])=>$(k).value=v);
+ document.querySelectorAll("#rows tr").forEach((tr,i)=>{const r=s.rows[i];if(!r)return;
+  tr.querySelector(".on").checked=r.on;if(r.nm!=null&&tr.querySelector(".nm"))tr.querySelector(".nm").value=r.nm;
+  tr.querySelector(".q").value=r.q;tr.querySelector(".w").value=r.w;tr.querySelector(".h").value=r.h;tr.querySelector(".d").value=r.d;});
+ }catch(e){} }
+document.addEventListener("input",e=>{
+ if(e.target.classList.contains("rs")) RATES[e.target.dataset.i][1]=+e.target.value;
+ if(e.target.classList.contains("rw")) RATES[e.target.dataset.i][2]=+e.target.value;
+ calc();});
+$("addCustom").onclick=()=>{ save(); custom.push(["其他電器",100,1,1]); const s=JSON.parse(localStorage.getItem(KEY)||"{}"); s.custom=custom; s.rows=(s.rows||[]).concat([{on:true,nm:"其他電器",q:1,w:100,h:1,d:1}]); try{localStorage.setItem(KEY,JSON.stringify(s));}catch(e){} load(); calc(); };
+$("reset").onclick=()=>{ if(confirm("確定清除全部資料?")){ try{localStorage.removeItem(KEY);}catch(e){} location.reload(); } };
+$("copy").onclick=async()=>{ try{ await navigator.clipboard.writeText($("report").textContent); $("copy").textContent="已複製 ✓"; setTimeout(()=>$("copy").textContent="複製說明",1500);}catch(e){ alert("請手動選取文字複製"); } };
+// ---- 銘牌拍照辨識(Tesseract.js,需網路載入一次)----
+let camRow=null,tessP=null;
+function loadTess(){ return tessP||(tessP=new Promise((ok,no)=>{ if(window.Tesseract)return ok();
+ const s=document.createElement("script"); s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+ s.onload=ok; s.onerror=()=>{tessP=null;no(new Error("無法載入辨識引擎(請確認網路)"));}; document.head.appendChild(s); })); }
+function parsePower(text){
+ const out=[],seen=new Set(),add=(w,label)=>{w=Math.round(w);if(w>=1&&w<=20000&&!seen.has(w)){seen.add(w);out.push({w,label});}};
+ text.split("\n").forEach(line=>{
+  if(/能力|cooling|capacity|heating|btu|kcal/i.test(line))return; // 冷房/暖房能力不是耗電
+  for(const m of line.matchAll(/(\d{1,5}(?:\.\d+)?)\s*(k?)W\b/gi)) add(+m[1]*(m[2]?1000:1),"銘牌標示 "+m[0]);
+ });
+ if(!out.length){ const v=[...text.matchAll(/(\d{2,3})\s*V\b/gi)].map(m=>+m[1]).find(x=>x>=100&&x<=440);
+  const a=text.match(/(\d{1,2}(?:\.\d+)?)\s*A\b/); if(v&&a) add(v*+a[1],`${v}V × ${a[1]}A 換算`); }
+ return out;
+}
+function showOcr(text){
+ const box=$("ocr"), name=camRow.querySelector(".nm")?camRow.querySelector(".nm").value:APPL[camRow.dataset.i][0], c=parsePower(text);
+ box.innerHTML=`<b>${name}</b> 辨識結果:`+(c.length?c.map((x,i)=>` <button type=button class="sec use" data-w="${x.w}">採用 ${x.w} W <small>(${x.label.replace(/[<>&]/g,"")})</small></button>`).join(""):" <span class=warn>找不到瓦數</span>")+
+ `<div class=row><input id=mdl placeholder="輸入型號 → 查規格" style="max-width:260px"><button type=button class=sec id=mdlGo>搜尋型號</button><button type=button class=sec id=ocrX>關閉</button></div>
+ <details><summary class=note>辨識原文(請核對)</summary><pre id=ocrRaw></pre></details>
+ <div class=note>注意:冷氣銘牌的「冷房能力」不是耗電瓦數,請選「消耗電功率/輸入」。辨識可能有誤,務必對照照片確認。</div>`;
+ $("ocrRaw").textContent=text; box.hidden=false;
+}
+document.addEventListener("click",e=>{
+ const cam=e.target.closest(".cam"); if(cam){camRow=cam.closest("tr");$("photo").click();return;}
+ const use=e.target.closest(".use"); if(use&&camRow){const w=camRow.querySelector(".w");w.value=use.dataset.w;camRow.querySelector(".on").checked=true;w.dispatchEvent(new Event("input",{bubbles:true}));$("ocr").hidden=true;return;}
+ if(e.target.id==="ocrX")$("ocr").hidden=true;
+ if(e.target.id==="mdlGo"){const m=$("mdl").value.trim(); if(m)window.open("https://www.google.com/search?q="+encodeURIComponent(m+" 額定功率 消耗電功率 規格"),"_blank");}
+});
+$("photo").onchange=async e=>{
+ const file=e.target.files[0]; e.target.value=""; if(!file||!camRow)return;
+ const box=$("ocr"); box.hidden=false; box.textContent="辨識中…(首次需下載辨識引擎,約數秒~數十秒)";
+ try{ await loadTess(); const {data}=await Tesseract.recognize(file,"eng"); showOcr(data.text); }
+ catch(err){ box.textContent="辨識失敗:"+err.message+"。請改手動輸入瓦數。"; }
+};
+build(); load(); calc();
+</script>
+</body>
+</html>
