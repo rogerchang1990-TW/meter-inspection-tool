@@ -270,14 +270,21 @@ document.addEventListener("click",e=>{
 });
 $("photo").onchange=async e=>{
  const file=e.target.files[0]; e.target.value=""; if(!file||!camRow)return;
- const box=$("ocr"); box.hidden=false; box.textContent="處理照片中…";
- let worker;
+ const box=$("ocr"); box.hidden=false; box.textContent="辨識中…(首次需下載辨識引擎,約數秒~數十秒)";
+ let worker; const texts=[],errs=[];
  try{
-  const img=await prep(file); box.textContent="辨識中…(首次需下載辨識引擎,約數秒~數十秒)";
   await loadTess(); worker=await Tesseract.createWorker("eng");
-  let text="";
-  for(const psm of ["6","11"]){ await worker.setParameters({tessedit_pageseg_mode:psm,preserve_interword_spaces:"1"}); text+=(await worker.recognize(img)).data.text+"\n"; }
-  showOcr(text.trim());
+  // 1) 原圖照舊辨識(與第一版相同,確保原本讀得到的仍讀得到)
+  try{ texts.push((await worker.recognize(file)).data.text); }catch(er){ errs.push("原圖:"+(er&&er.message||er)); }
+  // 2) 增強後的照片,兩種版面模式,各自獨立,失敗不影響其他
+  let img=null; try{ img=await prep(file); }catch(er){ errs.push("照片處理:"+(er&&er.message||er)); }
+  if(img) for(const psm of ["6","11"]){
+   try{ await worker.setParameters({tessedit_pageseg_mode:psm}); texts.push((await worker.recognize(img)).data.text); }
+   catch(er){ errs.push("模式"+psm+":"+(er&&er.message||er)); }
+  }
+  if(!texts.length) throw new Error(errs.join(";")||"沒有辨識結果");
+  showOcr(texts.map(t=>t.trim()).filter(Boolean).join("\n--\n"));
+  if(errs.length) box.append(el("div",{className:"note",textContent:"部分步驟失敗(已略過):"+errs.join(";")}));
  }catch(err){ box.textContent="辨識失敗:"+(err&&err.message||err)+"。請改手動輸入瓦數。"; }
  finally{ try{worker&&await worker.terminate();}catch(e){} }
 };
